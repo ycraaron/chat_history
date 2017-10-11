@@ -1,5 +1,6 @@
 # coding: utf-8
 from datetime import datetime
+from collections import deque
 import xlrd
 import re
 import db_manager
@@ -18,6 +19,7 @@ EMOJI_PATTERN = re.compile(
     "+", flags=re.UNICODE)
 
 db_conn = db_manager.DBConn()
+
 
 def entry():
 
@@ -274,17 +276,18 @@ def chinese_detect():
 
 
 def generate_dic():
-    sql = "SELECT id, user_input, new_conver FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' and multimedia = 0 ORDER BY `id` ASC"
+    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' and multimedia = 0 ORDER BY `id` ASC"
     ls_result = db_conn.fetch_data(sql)
     print len(ls_result)
     # print ls_result
     ls_dic = []
     for record in ls_result:
-        print record
+        # print record
         id = record['id']
         message = record['user_input']
         initial = record['new_conver']
-        dic = {'id': id, 'message': message, 'msg_initial':initial}
+        continuous = record['continuous']
+        dic = {'id': id, 'message': message, 'msg_initial':initial, 'continuous': record['continuous']}
         ls_dic.append(dic)
 
     thefile = open('test.txt', 'w')
@@ -297,15 +300,45 @@ def generate_dic():
 
 
     # entry()
-# print(content)
 
+
+def check_conti():
+    ls_sequence = deque([])
+    result = db_conn.fetch_data("SELECT user_input, lib_response, id FROM whatsapp_record WHERE (user_input,lib_response)!= (' ',' ') ORDER BY id")
+    for record in result:
+        # Librarian response found
+        if record['user_input'] == ' ':
+            ls_sequence.append({'response': 1, 'id': record['id']})
+        # User input found
+        else:
+            ls_sequence.append({'response': 0, 'id': record['id']})
+    # print ls_sequence
+    # ls_sequence.popleft()
+    ls_msg_conti = []
+    ls_msg_db = []
+    while True:
+        if not ls_sequence:
+            break
+        msg = ls_sequence.popleft()
+        if msg['response'] == 0:
+            ls_msg_conti.append(msg)
+        elif msg['response'] == 1:
+            if len(ls_msg_conti) > 1:
+                for msg in ls_msg_conti:
+                    print db_conn.update_data("UPDATE `whatsapp_record` SET `continuous` = 1 WHERE id = %s", [str(msg['id'])])
+                    # ls_msg_db.append(msg)
+                ls_msg_conti = []
+            else:
+                ls_msg_conti = []
+
+    print len(ls_msg_db)
+    ls_id = []
+    for item in ls_msg_db:
+        ls_id.append(str(item['id']))
+
+    # print ls_sequence
+#check_conti()
+# print(content)
 generate_dic()
 # datetime_test()
-
 # chinese_detect()
-# - 9
-# 9-
-# -9
-# - 9
-#
-# - ‪+852 6997 3675‬:
