@@ -34,7 +34,9 @@ EMOJI_PATTERN = re.compile(
 #         r'(?::\d+)?' # optional port
 #         r'(?:/?|[/?]\S+)', re.IGNORECASE)
 
-URL_PATTERN = r'(https|http)?:\/\/(\w|\.|\/|\?|\=|\&|\%)*\b'
+# URL_PATTERN = r'(https|http)?:\/\/(\w|\.|\/|\?|\=|\&|\%)*\b'
+
+URL_PATTERN = r'(((https|http):\/\/)|(www\.))(\w|\.|\/|\?|=|&|\^|%|#|\$|\!|-|_|~|\+|\:|\,|\(|\)|\{|\})*|www\.\b'
 
 table = {ord(f): ord(t) for f, t in zip(
     u'“”～‘’，。！？【】（）％＃＠＆１２３４５６７８９０',
@@ -46,7 +48,7 @@ file_meta_data = open('output/meta_data.txt','w')
 start = timer()
 
 
-def entry():
+def extract_records():
 
     src = "/Users/Aaron/Intralogue/chat_history/chat3.xlsx"
 
@@ -321,6 +323,7 @@ def gen_n_gram(input_sentence):
     # quit()
     ls_cnt_words = []
     ls_pos_sentence = []
+    ls_sentence_seg = []
     for sentence in result_tag['sentences']:
         # print sentence
         cnt_words = 0
@@ -364,11 +367,11 @@ def gen_n_gram(input_sentence):
     n_grams = ngrams(words, 5, pad_left=True, pad_right=True)
     ls_ngram = list(n_grams)
 
-    ls_result = []
+    ls_n_grams = []
     for index in ls_target_index:
-        ls_result.append(ls_ngram[index+2])
+        ls_n_grams.append(ls_ngram[index+2])
     # print ls_result
-    return ls_result
+    return [ls_n_grams, ls_pos_sentence]
 
 
 def remove_non_ascii(text):
@@ -382,8 +385,9 @@ def remove_punc(text):
 def generate_dic():
     cnt_excep = 0
     sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' AND multimedia = 0 ORDER BY `id` ASC"
-    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE user_input LIKE %s ORDER BY `id` ASC"
-    ls_result = db_conn.fetch_data(sql, ['%http%'])
+    ls_result = db_conn.fetch_data(sql)
+    # sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE user_input LIKE %s ORDER BY `id` ASC"
+    # ls_result = db_conn.fetch_data(sql, ['%http%'])
     # print len(ls_result)
     # print ls_result
     print "total messages:", len(ls_result)
@@ -392,6 +396,7 @@ def generate_dic():
     result_file = open('output/result.txt', 'w')
     i = 0
     seg = [50, 100, 200, 500, 700, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000]
+    ls_msg_word_corpus = []
     for record in ls_result:
         # print record
         # print record
@@ -402,13 +407,18 @@ def generate_dic():
         # print type(message_origin), message_origin
         # message = message_origin.translate(table)
         # message = message_origin.encode()
-        message = re.sub(URL_PATTERN, 'replaced_url', message_origin, flags=re.IGNORECASE)
+        message = re.sub(URL_PATTERN, 'replacedurl', message_origin, flags=re.IGNORECASE)
         # print message
         message = remove_punc(remove_non_ascii(message))
         # print message
         # print "AFTER translate", message
         try:
-            n_gram = gen_n_gram(message.encode("utf-8"))
+            n_gram_result = gen_n_gram(message.encode("utf-8"))
+            n_gram = n_gram_result[0]
+            if n_gram_result[1]:
+                for word in n_gram_result[1]:
+                    if word is not None:
+                        ls_msg_word_corpus.append(word)
         except Exception, data:
             # print data.__str__()
             cnt_excep += 1
@@ -431,18 +441,21 @@ def generate_dic():
         i += 1
     # for item in ls_dic:
         # print>> result_file, item
-    gen_matrix(ls_dic)
+    gen_matrix(ls_dic, ls_msg_word_corpus)
 
     print cnt_excep, " unhandled sentences."
 
 
 def cal_term_frequency(words, corpus):
+    # print words
+    corpus.sort()
+    # print corpus
     dic_term_frequency = {k: 0 for k in words}
 
     # print corpus
     for word in words:
         for word_cmp in corpus:
-            if word == word_cmp:
+            if word == word_cmp.lower():
                 dic_term_frequency[word] += 1
 
     dic_term_frequency['c_but'] = 40
@@ -472,7 +485,7 @@ def cal_term_frequency(words, corpus):
     #             dicter
 
 
-def gen_matrix(ls_dic):
+def gen_matrix(ls_dic, ls_msg_word_corpus):
     ls_n_gram = []
     ls_n_gram_pos_word = []
     for ls_dic in ls_dic:
@@ -499,7 +512,7 @@ def gen_matrix(ls_dic):
     print >> file_meta_data, "total unique words in corpus: ", len(ls_unique_n_gram_pos_word)
     print >> file_meta_data, "total n-grams in corpus:", len(ls_n_gram)
 
-    cal_term_frequency(ls_unique_n_gram_pos_word, ls_n_gram_pos_word)
+    cal_term_frequency(ls_unique_n_gram_pos_word, ls_msg_word_corpus)
 
     print >> file_order_words, ls_unique_n_gram_pos_word
     # quit()
@@ -606,7 +619,7 @@ def test():
     pattern = r'(https|http)?:\/\/(\w|\.|\/|\?|\=|\&|\%)*\b'
     print re.sub(pattern, 'replaced_url', msg, flags=re.IGNORECASE)
 
-
+# extract_records()
 # test()
 # check_conti()
 # print(content)
