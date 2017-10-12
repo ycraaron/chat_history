@@ -1,9 +1,16 @@
 # coding: utf-8
+from nltk import ngrams
+from nltk import word_tokenize
 from datetime import datetime
 from collections import deque
+from pycorenlp import StanfordCoreNLP
 import xlrd
 import re
 import db_manager
+import string
+
+nlp = StanfordCoreNLP('http://192.168.0.100:9000')
+
 
 # REG_DATETIME = r"((?:0?[1-9]|1[0-2])\/(?:0?[1-9]|[1-2][0-9]|3[0-1])\/(?:[0-9]\d{1}), (?:[1-9]|1[0-2]):(?:0[1-9]|[0-5][0-9]) (?:PM|AM))"
 # YYYY added
@@ -17,6 +24,11 @@ EMOJI_PATTERN = re.compile(
     u"(\ud83d[\ude80-\udeff])|"  # transport & map symbols
     u"(\ud83c[\udde0-\uddff])"  # flags (iOS)
     "+", flags=re.UNICODE)
+
+table = {ord(f): ord(t) for f, t in zip(
+    u'“”～‘’，。！？【】（）％＃＠＆１２３４５６７８９０',
+    u'""~\'\',.!?[]()%#@&1234567890')}
+exclude = set(string.punctuation)
 
 db_conn = db_manager.DBConn()
 
@@ -275,31 +287,148 @@ def chinese_detect():
         print n
 
 
-def generate_dic():
-    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' and multimedia = 0 ORDER BY `id` ASC"
-    ls_result = db_conn.fetch_data(sql)
-    print len(ls_result)
+def stanford_tree(line, annotators='tokenize,pos'):
+    output = nlp.annotate(line, properties={
+        'annotators': annotators,
+        'outputFormat': 'json'
+    })
+    try:
+        return output
+    except IndexError:
+        pass
+
+
+def gen_n_gram(input_sentence):
+    ls_target_pos_tag = ['VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ', 'NN', 'NNS', 'NNP', 'NNPS']
+    ls_target_word = []
+    ls_target_index = []
+    result_tag = stanford_tree(input_sentence)
+    # print result_tag
+
+    ls_cnt_words = []
+    ls_pos_sentence = []
+    for sentence in result_tag['sentences']:
+        # print sentence
+        cnt_words = 0
+        for token in sentence['tokens']:
+            pos = token['pos']
+            word = token['word']
+            word_pos = pos[0] + '_' + word
+            ls_pos_sentence.append(word_pos)
+            if pos in ls_target_pos_tag:
+                word_index = token['index'] - 1
+                if ls_cnt_words:
+                    for cnt_previous_word in ls_cnt_words:
+                        word_index += cnt_previous_word
+                dic_word = {'index': word_index, 'word': word_pos}
+                ls_target_word.append(dic_word)
+                ls_target_index.append(word_index)
+            cnt_words += 1
+        ls_cnt_words.append(cnt_words)
+
+    pos_sentence = ' '.join(ls_pos_sentence)
+
+    # word with pos
+    # print ls_target_word
+    # print ls_target_word
+    # print ls_target_index
+    ls_word = []
+    for dic in ls_target_word:
+        ls_word.append(dic['word'])
+
+
+    # uncomment following line to generate n-gram without POS
+    # words = word_tokenize(input_sentence)
+
+    # comment following line to generate n-gram with POS
+    words = word_tokenize(pos_sentence.lower())
+
+    n_grams = ngrams(words, 5, pad_left=True, pad_right=True)
+    ls_ngram = list(n_grams)
+
+    # print words
+    # print ls_ngram
+    # print "length of words: ", len(words)
+    # print "length of n grams: ", len(ls_ngram)
+    ls_result = []
+    for index in ls_target_index:
+        ls_result.append(ls_ngram[index+2])
     # print ls_result
+    return ls_result
+
+
+def remove_non_ascii(text):
+    return ''.join(ch for ch in text if ord(ch) < 128)
+
+
+def remove_punc(text):
+    return ''.join(ch for ch in text if ch not in exclude)
+
+
+def generate_dic():
+    cnt_excep = 0
+    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' AND multimedia = 0 AND id between 1 AND 100 ORDER BY `id` ASC"
+    # sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE id = 67"
+    ls_result = db_conn.fetch_data(sql)
+    # print len(ls_result)
+    # print ls_result
+    print "total messages:", len(ls_result)
     ls_dic = []
+    excep_file = open('excep.txt', 'w')
+    result_file = open('result.txt', 'w')
+    i = 0
+    seg = [500, 1000, 2000, 3000, 4000, 5000, 6000]
     for record in ls_result:
         # print record
         id = record['id']
-        message = record['user_input']
+        message_origin = record['user_input']
+        # message_origin = "How to cancel my study table booking please？"
+        # print type(message_origin), message_origin
+        # message = message_origin.translate(table)
+        # message = message_origin.encode()
+        message = remove_punc(remove_non_ascii(message_origin))
+        # print message
+        # print "AFTER translate", message
+        try:
+            n_gram = gen_n_gram(message.encode("utf-8"))
+        except Exception, data:
+            # print data.__str__()
+            cnt_excep += 1
+            n_gram = "Unhandled"
+            str_excep = "id: " + str(id) + ' msg: ' + message
+            print str_excep
+            print >> excep_file, str_excep
+            continue
+            # quit()
         initial = record['new_conver']
         continuous = record['continuous']
-        dic = {'id': id, 'message': message, 'msg_initial':initial, 'continuous': record['continuous']}
+        dic = {'id': id, 'message': message, 'msg_initial': initial, 'continuous': continuous, 'ngram': n_gram}
+        print>> result_file, dic
         ls_dic.append(dic)
+        if i in seg:
+            print str(i), " handled. ", str(len(ls_result)-i), " remaining."
+        i += 1
+    # for item in ls_dic:
+        # print>> result_file, item
+    gen_matrix(ls_dic)
 
-    thefile = open('test.txt', 'w')
-    for item in ls_dic:
-        print>> thefile, item
+    print cnt_excep, " unhandled sentences."
 
 
+def gen_matrix(ls_dic):
+    ls_n_gram = []
+    ls_n_gram_pos_word = []
+    for ls_dic in ls_dic:
+        for n_gram in ls_dic['ngram']:
+            ls_n_gram.append(n_gram)
+            for pos_word in n_gram:
+                ls_n_gram_pos_word.append(pos_word)
 
-
-
-
-    # entry()
+    print ls_n_gram
+    print ls_n_gram_pos_word
+    print "before removing dup length: ", len(ls_n_gram_pos_word)
+    set_n_gram_pos_word = set(ls_n_gram_pos_word)
+    print "duplicate removed length: ", len(set_n_gram_pos_word)
 
 
 def check_conti():
@@ -336,9 +465,20 @@ def check_conti():
     for item in ls_msg_db:
         ls_id.append(str(item['id']))
 
-    # print ls_sequence
-#check_conti()
+
+def test():
+    msg = "How to cancel my study table booking please？"
+    str = unicode(msg, encoding="utf-8")
+    print str
+    str2 = str.translate(table)
+    print unicode(str2)
+    print str2
+
+# test()
+# check_conti()
 # print(content)
 generate_dic()
 # datetime_test()
 # chinese_detect()
+# sentence = "Good morning. If I request a book from another university through HKALL, and borrow it with my HKU studentcard, can I borrow and return the book from main library @ HKU?"
+# gen_n_gram("How to cancel my study table booking please")
