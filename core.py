@@ -3,14 +3,16 @@ from nltk import ngrams
 from nltk import word_tokenize
 from datetime import datetime
 from collections import deque
+from collections import OrderedDict
 from pycorenlp import StanfordCoreNLP
+from timeit import default_timer as timer
 import xlrd
 import re
 import db_manager
 import string
+import time
 
 nlp = StanfordCoreNLP('http://192.168.0.100:9000')
-
 
 # REG_DATETIME = r"((?:0?[1-9]|1[0-2])\/(?:0?[1-9]|[1-2][0-9]|3[0-1])\/(?:[0-9]\d{1}), (?:[1-9]|1[0-2]):(?:0[1-9]|[0-5][0-9]) (?:PM|AM))"
 # YYYY added
@@ -24,6 +26,15 @@ EMOJI_PATTERN = re.compile(
     u"(\ud83d[\ude80-\udeff])|"  # transport & map symbols
     u"(\ud83c[\udde0-\uddff])"  # flags (iOS)
     "+", flags=re.UNICODE)
+# URL_PATTERN = re.compile(
+#         r'(?:http|ftp)s?://' # http:// or https://
+#         r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
+#         r'localhost|' #localhost...
+#         r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
+#         r'(?::\d+)?' # optional port
+#         r'(?:/?|[/?]\S+)', re.IGNORECASE)
+
+URL_PATTERN = r'(https|http)?:\/\/(\w|\.|\/|\?|\=|\&|\%)*\b'
 
 table = {ord(f): ord(t) for f, t in zip(
     u'“”～‘’，。！？【】（）％＃＠＆１２３４５６７８９０',
@@ -31,6 +42,8 @@ table = {ord(f): ord(t) for f, t in zip(
 exclude = set(string.punctuation)
 
 db_conn = db_manager.DBConn()
+file_meta_data = open('output/meta_data.txt','w')
+start = timer()
 
 
 def entry():
@@ -287,7 +300,7 @@ def chinese_detect():
         print n
 
 
-def stanford_tree(line, annotators='tokenize,pos'):
+def stanford_tree(line, annotators='tokenize,pos,lemma'):
     output = nlp.annotate(line, properties={
         'annotators': annotators,
         'outputFormat': 'json'
@@ -300,11 +313,12 @@ def stanford_tree(line, annotators='tokenize,pos'):
 
 def gen_n_gram(input_sentence):
     ls_target_pos_tag = ['VB', 'VBD', 'VBG', 'VBN', 'VBP', 'VBZ', 'NN', 'NNS', 'NNP', 'NNPS']
+    ls_lemma_pos_tag = ['NN', 'NNS', 'NNP', 'NNPS']
     ls_target_word = []
     ls_target_index = []
     result_tag = stanford_tree(input_sentence)
     # print result_tag
-
+    # quit()
     ls_cnt_words = []
     ls_pos_sentence = []
     for sentence in result_tag['sentences']:
@@ -312,8 +326,12 @@ def gen_n_gram(input_sentence):
         cnt_words = 0
         for token in sentence['tokens']:
             pos = token['pos']
-            word = token['word']
-            word_pos = pos[0] + '_' + word
+            if pos in ls_lemma_pos_tag:
+                word = token['lemma']
+                word_pos = pos[0] + '_' + word
+            else:
+                word = token['word']
+                word_pos = pos[0] + '_' + word
             ls_pos_sentence.append(word_pos)
             if pos in ls_target_pos_tag:
                 word_index = token['index'] - 1
@@ -346,10 +364,6 @@ def gen_n_gram(input_sentence):
     n_grams = ngrams(words, 5, pad_left=True, pad_right=True)
     ls_ngram = list(n_grams)
 
-    # print words
-    # print ls_ngram
-    # print "length of words: ", len(words)
-    # print "length of n grams: ", len(ls_ngram)
     ls_result = []
     for index in ls_target_index:
         ls_result.append(ls_ngram[index+2])
@@ -367,26 +381,30 @@ def remove_punc(text):
 
 def generate_dic():
     cnt_excep = 0
-    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' AND multimedia = 0 AND id between 1 AND 100 ORDER BY `id` ASC"
-    # sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE id = 67"
-    ls_result = db_conn.fetch_data(sql)
+    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE chinese = 0 AND lib_response = ' ' AND user_input != ' ' AND multimedia = 0 ORDER BY `id` ASC"
+    sql = "SELECT id, user_input, new_conver, continuous FROM `whatsapp_record` WHERE user_input LIKE %s ORDER BY `id` ASC"
+    ls_result = db_conn.fetch_data(sql, ['%http%'])
     # print len(ls_result)
     # print ls_result
     print "total messages:", len(ls_result)
     ls_dic = []
-    excep_file = open('excep.txt', 'w')
-    result_file = open('result.txt', 'w')
+    excep_file = open('output/excep.txt', 'w')
+    result_file = open('output/result.txt', 'w')
     i = 0
-    seg = [500, 1000, 2000, 3000, 4000, 5000, 6000]
+    seg = [50, 100, 200, 500, 700, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000]
     for record in ls_result:
+        # print record
         # print record
         id = record['id']
         message_origin = record['user_input']
+        # message_origin = "How can I borrow some books or music from http://sunzi.lib.hku.hk/hkgro/view/b1880/51880025.pdf and library?"
         # message_origin = "How to cancel my study table booking please？"
         # print type(message_origin), message_origin
         # message = message_origin.translate(table)
         # message = message_origin.encode()
-        message = remove_punc(remove_non_ascii(message_origin))
+        message = re.sub(URL_PATTERN, 'replaced_url', message_origin, flags=re.IGNORECASE)
+        # print message
+        message = remove_punc(remove_non_ascii(message))
         # print message
         # print "AFTER translate", message
         try:
@@ -405,14 +423,53 @@ def generate_dic():
         dic = {'id': id, 'message': message, 'msg_initial': initial, 'continuous': continuous, 'ngram': n_gram}
         print>> result_file, dic
         ls_dic.append(dic)
+        end = timer()
         if i in seg:
             print str(i), " handled. ", str(len(ls_result)-i), " remaining."
+            print (str(round(end - start, 2)) + " seconds used")
+
         i += 1
     # for item in ls_dic:
         # print>> result_file, item
     gen_matrix(ls_dic)
 
     print cnt_excep, " unhandled sentences."
+
+
+def cal_term_frequency(words, corpus):
+    dic_term_frequency = {k: 0 for k in words}
+
+    # print corpus
+    for word in words:
+        for word_cmp in corpus:
+            if word == word_cmp:
+                dic_term_frequency[word] += 1
+
+    dic_term_frequency['c_but'] = 40
+    highest = max(dic_term_frequency.values())
+    if highest > 0:
+        ls_highest_pos = ([k for k, v in dic_term_frequency.items() if v == highest])
+
+    if ls_highest_pos:
+        print "highest frequency terms: ", ls_highest_pos
+        print >> file_meta_data, "highest frequency terms: ", ls_highest_pos
+        for key in ls_highest_pos:
+            print "highest term frequency:", dic_term_frequency[key]
+            print >> file_meta_data, "highest term frequency: ", dic_term_frequency[key]
+            break
+
+    # key_max = max(dic_term_frequency.iterkeys(), key=lambda k: dic_term_frequency[k])
+    # print key_max
+    #
+    # print dic_term_frequency[key_max]
+
+    print >> file_meta_data, "term frequency:", dic_term_frequency
+
+    # quit()
+    # for word in words:
+    #     for word_cmp in corpus:
+    #         if word == word_cmp:
+    #             dicter
 
 
 def gen_matrix(ls_dic):
@@ -422,13 +479,85 @@ def gen_matrix(ls_dic):
         for n_gram in ls_dic['ngram']:
             ls_n_gram.append(n_gram)
             for pos_word in n_gram:
-                ls_n_gram_pos_word.append(pos_word)
+                if pos_word is not None:
+                    ls_n_gram_pos_word.append(pos_word)
 
-    print ls_n_gram
-    print ls_n_gram_pos_word
-    print "before removing dup length: ", len(ls_n_gram_pos_word)
+    # print ls_n_gram
+    # print ls_n_gram_pos_word
+    # print "before removing dup length: ", len(ls_n_gram_pos_word)
     set_n_gram_pos_word = set(ls_n_gram_pos_word)
-    print "duplicate removed length: ", len(set_n_gram_pos_word)
+    # print "duplicate removed length: ", len(set_n_gram_pos_word)
+
+    ls_unique_n_gram_pos_word = list(set_n_gram_pos_word)
+
+    ls_unique_n_gram_pos_word.sort()
+
+    file_order_words = open('output/words_order.txt', 'w')
+    print "total unique words in corpus: ", len(ls_unique_n_gram_pos_word)
+    print "total n-grams in corpus: ", len(ls_n_gram)
+
+    print >> file_meta_data, "total unique words in corpus: ", len(ls_unique_n_gram_pos_word)
+    print >> file_meta_data, "total n-grams in corpus:", len(ls_n_gram)
+
+    cal_term_frequency(ls_unique_n_gram_pos_word, ls_n_gram_pos_word)
+
+    print >> file_order_words, ls_unique_n_gram_pos_word
+    # quit()
+    # print ls_unique_n_gram_pos_word
+    gen_adj_matrix(ls_unique_n_gram_pos_word, ls_n_gram)
+
+
+def gen_adj_matrix(uni_ngram_words, n_gram_corpus):
+    dic_corpus = {}
+    # print uni_ngram_words
+    # Build empty dictionary
+    seg = [200, 500, 700, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000]
+    i = 0
+    file_n_gram_matrix = open('output/n_gram_matrix_num.txt', 'w')
+
+    for word in uni_ngram_words:
+        dic_corpus[word] = {w: 0 for w in uni_ngram_words}
+        dic_corpus[word] = count_frequency(word, dic_corpus[word], n_gram_corpus)
+        ls_cnt = []
+        # print dic_corpus[word]
+        for k, v in dic_corpus[word].iteritems():
+            ls_cnt.append(v)
+        print >> file_n_gram_matrix, ls_cnt
+        i += 1
+        if i in seg:
+            end = timer()
+            print str(i), " finished, ", str(len(uni_ngram_words) - i), " remaining."
+            print (str(round(end - start, 2)) + " seconds used")
+
+    # print dic_corpus
+    # print >>file_n_gram_matrix, dic_corpus
+    # for dic in dic_corpus:
+    #     print >>n_gram_matrix, list(dic)
+
+
+def count_frequency(word, dic, n_gram_corpus):
+    # print "Dic for:", word, dic
+    for n_gram in n_gram_corpus:
+        # print n_gram_corpus
+        n_gram = list(n_gram)
+        # print n_gram
+        # print u"w_how" in n_gram
+        indices = [i for i, x in enumerate(n_gram) if x == word]
+        indices.sort()
+        if indices:
+            # print indices
+            for index in indices:
+                if index < len(n_gram) - 1: # 4
+                    # print index
+                    following_word = n_gram[index + 1]
+                    if following_word is not None:
+                        dic[following_word] += 1
+        # if word in n_gram:
+        #     index_word = n_gram.index(word)
+        #     if index_word == len(n_gram) - 1:
+        #         continue
+        #     index_word_next = n_gram
+    return dic
 
 
 def check_conti():
@@ -441,8 +570,6 @@ def check_conti():
         # User input found
         else:
             ls_sequence.append({'response': 0, 'id': record['id']})
-    # print ls_sequence
-    # ls_sequence.popleft()
     ls_msg_conti = []
     ls_msg_db = []
     while True:
@@ -467,12 +594,18 @@ def check_conti():
 
 
 def test():
-    msg = "How to cancel my study table booking please？"
-    str = unicode(msg, encoding="utf-8")
-    print str
-    str2 = str.translate(table)
-    print unicode(str2)
-    print str2
+    # msg = "How to cancel my study table booking please？"
+    # str = unicode(msg, encoding="utf-8")
+    # print str
+    # str2 = str.translate(table)
+    # print unicode(str2)
+    # print str2
+    msg = "a http://sunzi.lib.hku.hk/hkgro/view/b1880/51880025.pdf"
+    print re.findall(URL_PATTERN, msg)
+    pattern = r'https?:\/\/.*[\r\n]* ?'
+    pattern = r'(https|http)?:\/\/(\w|\.|\/|\?|\=|\&|\%)*\b'
+    print re.sub(pattern, 'replaced_url', msg, flags=re.IGNORECASE)
+
 
 # test()
 # check_conti()
@@ -481,4 +614,4 @@ generate_dic()
 # datetime_test()
 # chinese_detect()
 # sentence = "Good morning. If I request a book from another university through HKALL, and borrow it with my HKU studentcard, can I borrow and return the book from main library @ HKU?"
-# gen_n_gram("How to cancel my study table booking please")
+# gen_n_gram("How can I borrow some books or music from http://sunzi.lib.hku.hk/hkgro/view/b1880/51880025.pdf and library?")
