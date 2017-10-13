@@ -447,18 +447,21 @@ def generate_dic():
 
 
 def cal_term_frequency(words, corpus):
-    # print words
-    corpus.sort()
-    # print corpus
+    # corpus.sort()
     dic_term_frequency = {k: 0 for k in words}
 
     # print corpus
+    # for calculating term frequency in msg corpus or ngram word corpus
+    # for word in words:
+    #     for word_cmp in corpus:
+    #         if word == word_cmp:
+    #             dic_term_frequency[word] += 1
+
     for word in words:
-        for word_cmp in corpus:
-            if word == word_cmp.lower():
+        for n_gram in corpus:
+            if word == list(n_gram)[2]:
                 dic_term_frequency[word] += 1
 
-    dic_term_frequency['c_but'] = 40
     highest = max(dic_term_frequency.values())
     if highest > 0:
         ls_highest_pos = ([k for k, v in dic_term_frequency.items() if v == highest])
@@ -512,7 +515,7 @@ def gen_matrix(ls_dic, ls_msg_word_corpus):
     print >> file_meta_data, "total unique words in corpus: ", len(ls_unique_n_gram_pos_word)
     print >> file_meta_data, "total n-grams in corpus:", len(ls_n_gram)
 
-    cal_term_frequency(ls_unique_n_gram_pos_word, ls_msg_word_corpus)
+    cal_term_frequency(ls_unique_n_gram_pos_word, ls_n_gram)
 
     print >> file_order_words, ls_unique_n_gram_pos_word
     # quit()
